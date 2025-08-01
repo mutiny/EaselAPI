@@ -22,8 +22,8 @@ var brush_off_canvas = false
 var canvas_boundry = 0
 var canvas_mid = 0
 # PATCH START
-var chalkOn = true
-var TileMapReplacement
+var _last_pos : Vector3
+var queued_pixel_array = []
 #PATCH END
 
 
@@ -34,52 +34,43 @@ onready var vis_node = $VisibilityNotifier
 func _ready():
 	$Viewport / TileMap.clear()
 	$GridMap.clear()
-	
-	#PATCH START
-	while $Viewport.get_node_or_null("TileMap"):
-		$Viewport.get_node("TileMap").queue_free()
-		yield(get_tree(), "idle_frame")
-	var replacementnode = load("res://mods/PurplePuppy.Testing/CanvasSceneOverride/TileMapReplacement.tscn").instance()
-	$Viewport.add_child(replacementnode)
-	TileMapReplacement = replacementnode  
-	TileMapReplacement.parentid = int(canvas_id)
-	#PATCH END
-	
+
 	if inherit_id:
 		canvas_id = get_node(inherit_id).actor_id
 		rotation = Vector3.ZERO
-	
+		
 	canvas_boundry = canvas_size * 10
 	canvas_mid = 0
 	$Area.scale = Vector3.ONE * canvas_size
 	
+	#PATCH START
+	PlayerData.connect("_chalk_recieve", self, "_queue_array")
+	_last_pos = global_transform.origin
+	wait_replace()
+	return
+	# PATCH END
 	var vis_size = canvas_size * 1.5
 	var vec = Vector3(vis_size, vis_size, vis_size)
 	vis_node.aabb = AABB(vec * - 0.5, vec)
 	vis_node.connect("screen_entered", self, "_screen_entered")
 	vis_node.connect("screen_exited", self, "_screen_exited")
 	
-	PlayerData.connect("_chalk_draw", self, "_chalk_draw")
-	PlayerData.connect("_chalk_update", self, "_chalk_update")
-	PlayerData.connect("_chalk_send", self, "_chalk_send")
-	PlayerData.connect("_chalk_recieve", self, "_chalk_recieve")
+#PATCH
+func queue_array(array, id):
+	if id != canvas_id: return
 	
-	OptionsMenu.connect("_options_update", self, "_options_update")
+	for pd in array:
+		queued_pixel_array.append(pd.duplicate(true))
+#PATCH END
 	
-	Network.connect("_new_player_join", self, "_chalk_send_total")
-	
-
 func _chalk_update(pos):
 	last_mouse_pos = pos
 
 
 func _chalk_draw(pos, size, color):
-
-
 	brush_color = color
 	brush_size = size
 	step_size = size
-	if !chalkOn: return # PATCH
 	
 	var diff = (global_transform.origin - pos)
 	if diff.length() > canvas_size and circular:
@@ -95,6 +86,8 @@ func _chalk_draw(pos, size, color):
 	_add_brush(p, brush_mode, p2)
 	last_mouse_pos = pos
 
+
+
 func _add_brush(grid_pos, type, from):
 	var color = brush_color
 	if type == BrushMode.ERASER: color = - 1
@@ -109,13 +102,6 @@ func _add_brush(grid_pos, type, from):
 			for y in brush_size:
 				var final = _clamp_cell(pos + Vector2(x, y))
 				
-				#PATCH BELOW
-				
-				TileMapReplacement.set_cell(final.x, final.y, color)
-				send_load.append([final, color])
-				continue
-				#PATCH END
-				
 				
 				$Viewport / TileMap.set_cell(final.x, final.y, color)
 				send_load.append([final, color])
@@ -126,13 +112,6 @@ func _chalk_send():
 	send_load.clear()
 
 func _chalk_send_total(id):
-	#patch start
-
-	TileMapReplacement.update_joiner(id)
-	return
-	
-	#patch end
-	
 	
 	if not Network.GAME_MASTER: return
 	
@@ -147,14 +126,6 @@ func _chalk_send_total(id):
 
 func _chalk_recieve(data, id):
 	if id != canvas_id: return
-	
-	#PATCH BELOW
-	
-	TileMapReplacement.set_array(data)
-	return
-	
-	#PATCH END
-	
 	
 	for d in data:
 		var pos = _clamp_cell(d[0], 0)
@@ -171,31 +142,32 @@ func _clamp_cell(pos, offset = 100):
 	final.y = clamp(final.y, - grid_offset, grid_offset * 2)
 	return final
 
+#PATCH
+func wait_replace():
+	var tilemap = get_node("Viewport/TileMap")
+	tilemap.visible = false
+	tilemap.set_process(false)
+	tilemap.set_physics_process(false)
+	tilemap.set_process_input(false)
+	tilemap.set_process_unhandled_input(false)
+	tilemap.set_process_unhandled_key_input(false)
+	var spawner = get_tree().get_nodes_in_group("Mommy")[0]
+	var TileMapReplacementSpatial = spawner.spawn_replacement_tilemap(canvas_id)
+	TileMapReplacementSpatial.global_transform = global_transform
+	TileMapReplacementSpatial.canvas_size = canvas_size
+	TileMapReplacementSpatial.canvas_id = canvas_id
+	var TileMapReplacement = TileMapReplacementSpatial.get_node("Viewport/TileMap")
+	TileMapReplacement.set_pixel_array(queued_pixel_array, canvas_id)
+#PATCH END
+
 func _screen_entered():
-	#PATCH BELOW
-	visible = true
-	TileMapReplacement.visible = not OptionsMenu.chalk_disabled
-	return
-	#END PATCH
-	
 	visible = true 
 	$Viewport / TileMap.visible = not OptionsMenu.chalk_disabled
 	
 func _screen_exited():
-	#PATCH BELOW
-	visible = false
-	TileMapReplacement.visible = false
-	return
-	#PATCH END
-	
 	visible = false
 	$Viewport / TileMap.visible = false
 
 func _options_update():
-	#PATCH BELOW
-	TileMapReplacement.visible = not OptionsMenu.chalk_disabled
-	return
-	#END PATCH
-	
 	$Viewport / TileMap.visible = not OptionsMenu.chalk_disabled
 	

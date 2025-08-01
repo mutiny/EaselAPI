@@ -2,12 +2,12 @@ extends Node2D
 
 export var width := 200
 export var height := 200
+var parentid
 
 var replaced = true
 
 var image: Image
 var texture: ImageTexture
-var parentid = 0
 
 var color_map := {
 	0: Color8(255, 238, 218, 255),
@@ -20,8 +20,7 @@ var color_map := {
 	-1: Color8(0, 0, 0, 0)
 }
 
-var pending_vanilla_arrays := []
-var pending_rgb_arrays := []				 
+var pending_pixels := []
 
 onready var Mommy = get_tree().get_nodes_in_group("Mommy")[0] #Mommy??
 
@@ -32,7 +31,11 @@ func _ready() -> void:
 	image.lock()
 	image.fill(Color(0, 0, 0, 0))
 	image.unlock()
-
+	
+	PlayerData.connect("_chalk_recieve", self, "set_pixel_array")
+	OptionsMenu.connect("_options_update", self, "_options_update")
+	Network.connect("_new_player_join", self, "update_joiner")
+	
 	texture = ImageTexture.new()
 	texture.create_from_image(image)
 
@@ -42,96 +45,95 @@ func _ready() -> void:
 	$CanvasSprite.position = Vector2(100, 100)
 	set_process(true)
 
+
 #if ur the lobby host gotta find out if they have the mod and send them the right stuff right?
 func update_joiner(id):
-	if not Network.GAME_MASTER: return
 	
 	var steam_id = int(id)
-	if steam_id in Mommy.mod_user_id_array:
-		#you get colors lol
+	if Network.GAME_MASTER:
+		if steam_id in Mommy.mod_user_id_array:
+			#you get colors lol
+			var pixel_data = export_pixel_data()
+			
+			Network._send_P2P_Packet(
+				{"type": "chalk_packet", "data": pixel_data, "canvas_id": parentid},
+				str(steam_id),
+				2,
+				Network.CHANNELS.CHALK
+			)
+			
+		else:
+			#you dont get colors lol
+			var pixel_data = export_pixel_data()
+			for i in range(pixel_data.size()):
+				var cd = pixel_data[i][1]
+				if typeof(cd) == TYPE_ARRAY:
+					pixel_data[i][1] = _match_closest_ingame_color(cd)
+
+			Network._send_P2P_Packet(
+				{"type": "chalk_packet", "data": pixel_data, "canvas_id": parentid},
+				str(steam_id),
+				2,
+				Network.CHANNELS.CHALK
+			)
+	elif steam_id in Mommy.mod_user_id_array:
+		yield(get_tree().create_timer(3.0), "timeout")
+		#well, make sure they get the updated colors... 
 		var pixel_data = export_pixel_data()
 		
-		Network._send_P2P_Packet(
-			{"type": "chalk_packet", "data": pixel_data, "canvas_id": parentid},
-			str(steam_id),
-			2,
-			Network.CHANNELS.CHALK
-		)
+		var rgba_data = []
 		
-	else:
-		#you dont get colors lol
-		var pixel_data = export_pixel_data()
-		for i in range(pixel_data.size()):
-			var cd = pixel_data[i][1]
+		for entry in pixel_data:
+			var cd = entry[1]
 			if typeof(cd) == TYPE_ARRAY:
-				pixel_data[i][1] = _match_closest_ingame_color(cd)
-
+				rgba_data.append(entry)
+				
 		Network._send_P2P_Packet(
-			{"type": "chalk_packet", "data": pixel_data, "canvas_id": parentid},
+			{"type": "chalk_packet", "data": rgba_data, "canvas_id": parentid},
 			str(steam_id),
 			2,
 			Network.CHANNELS.CHALK
 		)
-
+		
 # Sets a single pixel by color ID or raw RGBA
 # x, y: coordinates (int), color_data: int or Array [r,g,b,a]
 func set_cell(x: int, y: int, color_data) -> void:
-	
-	if not _in_bounds(x, y):
-		return
-	var color: Color
-	if color_data is int:
-		color = color_map.get(color_data, Color(0, 0, 0, 1))
-	elif color_data is Array and color_data.size() >= 4:
-		color = Color8(color_data[0], color_data[1], color_data[2], color_data[3])
-	else:
-		return
-	image.lock()
-	image.set_pixel(x, y, color)
-	image.unlock()
-	texture.set_data(image)
+	pending_pixels.append([Vector2(x, y), color_data])
 
 # Queues a batch by detecting type from first entry
 # pixels: Array of [Vector2, int] or [Vector2, [r, g, b, a]]
-func set_array(pixels: Array) -> void:
-	if pixels.empty():
+func set_pixel_array(pixels, id = get_parent().get_parent().canvas_id) -> void:
+	if id != get_parent().get_parent().canvas_id or pixels.empty():
 		return
-	var first = pixels[0]
-	if first.size() != 2:
-		return
-	var cd = first[1]
-	if cd is int:
-		pending_vanilla_arrays.append(pixels)
-	elif cd is Array:
-		pending_rgb_arrays.append(pixels)
+	if pending_pixels.empty():
+		pending_pixels = pixels
+	else:
+		for entry in pixels:
+			pending_pixels.append(entry)
 
 func _process(delta: float) -> void:
-	if pending_vanilla_arrays.empty() and pending_rgb_arrays.empty():
+	if pending_pixels.empty():
 		return
 	_draw_pending()
 
-# Draws all queued pixel batches in one go
+# Draws all queued pixels
 func _draw_pending() -> void:
 	image.lock()
-	for pixels in pending_vanilla_arrays:
-		for p in pixels:
-			var pos = p[0]
-			var id = p[1]
-			if _in_bounds(pos.x, pos.y):
-				image.set_pixel(pos.x, pos.y, color_map.get(id, Color(0, 0, 0, 1)))
-	for pixels in pending_rgb_arrays:
-		for p in pixels:
-			var pos = p[0]
-			var arr = p[1]
-			image.set_pixel(pos.x-1, pos.y, Color8(arr[0], arr[1], arr[2], arr[3]))
+	for entry in pending_pixels:
+		var pos = entry[0]
+		var cd  = entry[1]
+		if not _in_bounds(pos.x, pos.y):
+			continue
+		if cd is int:
+			image.set_pixel(pos.x, pos.y, color_map.get(cd, Color(0, 0, 0, 1)))
+		elif cd is Array and cd.size() >= 4:
+			image.set_pixel(pos.x, pos.y, Color8(cd[0], cd[1], cd[2], cd[3]))
 	image.unlock()
 	texture.set_data(image)
-	pending_vanilla_arrays.clear()
-	pending_rgb_arrays.clear()
-
+	pending_pixels.clear()
+	
 # Checks if (x, y) is inside the canvas bounds
 func _in_bounds(x: int, y: int) -> bool:
-	return true
 	return x >= 0 and x < width and y >= 0 and y < height
 
 # Clears the entire canvas to transparent
@@ -148,7 +150,9 @@ func get_pixel_data(pos: Vector2):
 	var y = int(pos.y)
 	if not _in_bounds(x, y):
 		return null
+	image.lock()   
 	var c = image.get_pixel(x, y)
+	image.unlock()       
 	for id in color_map.keys():
 		var cm = color_map[id]
 		if Color8(int(round(c.r*255)), int(round(c.g*255)), int(round(c.b*255)), int(round(c.a*255))) == cm:
@@ -159,11 +163,13 @@ func get_pixel_data(pos: Vector2):
 # Emulates TileMap.get_used_cells()
 func get_used_cells() -> Array:
 	var cells := []
+	image.lock() 
 	for x in range(width):
 		for y in range(height):
 			var c = image.get_pixel(x, y)
 			if c.a != 0:
 				cells.append(Vector2(x, y))
+	image.unlock() 
 	return cells
 
 # Emulates TileMap.get_cell(x,y)
@@ -181,11 +187,12 @@ func is_cell_used(pos: Vector2) -> bool:
 	var y = int(pos.y)
 	if not _in_bounds(x, y):
 		return false
+	image.lock()
 	var c = image.get_pixel(x, y)
+	image.unlock()
 	return c.a != 0
 	
 	
-#matching rgba values to in game colors
 #matching rgba values to in game colors
 func _match_closest_ingame_color(rgba: Array) -> int:
 	if rgba.size() < 3:
@@ -230,3 +237,26 @@ func export_pixel_data() -> Array:
 				data.append([pos, [int(round(c.r*255)), int(round(c.g*255)), int(round(c.b*255)), int(round(c.a*255))]])
 	image.unlock()
 	return data
+	
+func _options_update():
+	visible = not OptionsMenu.chalk_disabled
+
+func get_rgba_at(pos):
+	var x = pos.x
+	var y = pos.y
+	if not _in_bounds(x, y):
+		return false
+	image.lock()   
+	var c: Color = image.get_pixel(x, y)
+	image.unlock()   
+	if c.a == 0:
+		return false
+	return [
+		int(round(c.r * 255)),
+		int(round(c.g * 255)),
+		int(round(c.b * 255)),
+		int(round(c.a * 255))
+	]
+
+
+#add screen entered or exited

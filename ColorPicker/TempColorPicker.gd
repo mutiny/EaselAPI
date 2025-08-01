@@ -4,7 +4,7 @@ signal color_updated
 
 
 onready var save_button = $"../../Button"
-
+onready var panel = $"../../../../PanelContainer"
 
 var selected_color := Color(1, 1, 1, 1)
 var selected_r := 255
@@ -31,6 +31,19 @@ func _on_color_changed(color: Color) -> void:
 	selected_g = int(round(color.g * 255))
 	selected_b = int(round(color.b * 255))
 	selected_a = int(round(color.a * 255))
+	emit_signal("color_updated", [selected_r, selected_g, selected_b, selected_a])
 
 func button_pressed():
 	emit_signal("color_updated", [selected_r, selected_g, selected_b, selected_a])
+
+func set_selected_color(rgba, apply) -> void:
+	if rgba:
+		if rgba.size() >= 4:
+			var c = Color8(rgba[0], rgba[1], rgba[2], rgba[3])
+			color = c
+			if apply:
+				_on_color_changed(c)
+
+#Mouse pos
+func cursor_over():
+	return panel.is_cursor_over()
